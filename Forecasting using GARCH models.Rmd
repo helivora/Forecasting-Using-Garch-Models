@@ -1,0 +1,306 @@
+---
+title: "Forecasting Stock Prices and Returns"
+author: "Heli Vora"
+date: "December 1, 2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Data loading and sourcing
+
+```{r cars}
+library(rugarch)
+source("SPRFunctions.R")
+
+```
+Forecasting stock prices of Microsoft based on data from 2007 to 2016
+
+```{r pressure}
+
+library(quantmod)
+options("getSymbols.yahoo.warning"=FALSE)
+data_set = get(getSymbols("MSFT"))
+data_set = dailyReturn(Ad(data_set),type = "log")
+
+head(data_set,2)
+tail(data_set,2)
+
+data_set_analysis = data_set["2007-01-01::2016-10-31"]
+data_set_test = data_set["2016-11-01::"]
+
+
+head(data_set_analysis,2)
+tail(data_set_analysis,2)
+
+head(data_set_test,2)
+tail(data_set_test,2)
+
+```
+
+
+Analysing distribution of the model
+
+```{r mdist1}
+
+
+qqnorm(data_set_analysis)
+qqline(data_set_analysis)  
+
+
+```
+
+```{r mdist 2}
+logR = data_set_analysis
+logR = as.data.frame(logR)
+
+
+n=dim(logR)[1]
+q_grid = (1:n) / (n + 1)
+df_grid = c(1, 3, 6, 10, 20, 30)
+gam_grid = c(0.01,0.1,1.0)
+index.names = dimnames(logR)[[2]]
+par(mfrow = c(3, 2))
+
+for(df in df_grid)
+{
+  
+    qqplot(logR[,1], qt(q_grid,df),
+           main = paste(index.names[1], ", df = ", df) )
+    #plot.new()
+    abline(lm(qt(c(0.25, 0.75), df = df) ~
+                quantile(logR[,1], c(0.25, 0.75))))
+
+}
+
+```
+
+
+```{r mdist 3}
+##Checking QQ PLot of data wrt skewed t distribution
+
+library(skewt)
+par(mfrow = c(3, 2))
+for(gam in gam_grid)
+  for(df in df_grid)
+  {
+    {
+  
+    qqplot(logR[,1], qskt(q_grid,df,gam),
+           main = paste(index.names[1], ", df = ", df) )
+    #plot.new()
+    title(paste("Skewed Parameter = ", gam), outer=TRUE) 
+    abline(lm(qskt(c(0.25, 0.75), df = df, gamma = gam) ~
+                quantile(logR[,1], c(0.25, 0.75))))
+
+    }
+  }
+
+
+
+```
+
+In the above part of the code, we have plot the probability plots of our data wrt different distributions. 
+The topmost panel is the normal probability plot of daily returns of Microsoft. The bottom panels are quantile plots of sample quantiles against quantiles from standard-t and skewed standard-t. 
+From the above plots, we observe that the distribution of Microsoft returns data is not normal. It has heavy tails and GARCH type dependancies among the data. 
+
+While creating quantile plots of t-distribution, I plot it w.r.t to six different degrees of freedom. From that I observe that the data fits the t-distribution with degrees of freedom 3 the best.
+
+While creating quantile plots of skewed t-distribution, I plot it w.r.t to six different degrees of freedom and three different skewed parameters. From that I observe that the data fits the skewed t-distribution with degrees of freedom 3 and skewed parameter 1 the best.
+
+From this initial exploratory data analysis we can say that the data is heavily tailed and both t-distribution with df=3 and skewed-t distribution with df=3 and skewed parameter=1 fit the data well enough.
+These observations were a result of exploratory analysis, we can perform further analysis like conducting likelihood test to best determine the best model if required.
+
+
+```{r fit the dist}
+dt = fitdist("std", data_set_analysis) ## fit standard t to data
+dst = fitdist("sstd", data_set_analysis) ## fit skewed standard t to data
+
+rbind(std = c(loglik = -tail(dt$val,1), aic = 2*tail(dt$val,1)
++ 2*length(dt$par),bic = 2*tail(dt$val,1) + log(n)*length(dt$par)),
+sstd = c(loglik = -tail(dst$val,1), aic = 2*tail(dst$val,1)
++ 2*length(dst$par),bic = 2*tail(dst$val,1) + log(n)*length(dst$par)))
+
+
+
+
+```
+Both the AIC and BIC of skewed t distribution are higher than the t-distribution, suggesting that skewed t distribution shows better fit.
+
+We will now make a conditional mean model and ARMA model for the data
+
+
+
+```{r q2 blah}
+library(forecast)
+ggtsdisplay(data_set_analysis)
+
+```
+
+The ACF and PACF of the Microsoft data show that there exist some serial correlations
+
+```{r hdiwdjw sbs}
+
+k = 3
+n.fore = dim(data_set_test)[1]
+n = dim(data_set_analysis)[1]; 
+Yn = data_set_analysis
+aic = bic = matrix(ncol = k, nrow = k);
+dimnames(aic)[[1]] = dimnames(aic)[[2]] = as.character(0:(k-1))
+dimnames(bic)[[1]] = dimnames(bic)[[2]] = as.character(0:(k-1))
+for(i in 0:(k-1)){
+for(j in 0:(k-1)){
+out = arima(data_set_analysis, order = c(i,0,j), include.mean = FALSE)
+aic[i+1,j+1] = out$aic
+bic[i+1,j+1] = -2*out$loglik + log(n)*(length(out$coef) + 1)
+}
+}
+cat("aic for p,q = 0,1,2:\n");aic;cat("\nmodel selected by aic:\t",
+paste(c("p","q"), which(aic == min(aic), arr.ind = T)-1, sep = " = "));
+cat("\nbic for p,q = 0,1,2:\n"); bic;cat("\nmodel selected by bic:\t",
+paste(c("p","q"), which(bic == min(bic), arr.ind = T)-1, sep = " = "))
+
+
+```
+
+The ARMA(2,1) model is selected by the AIC and ARMA(1,1) model is selected by the BIC
+
+```{r dhcksad}
+library(forecast)
+auto.arima(data_set_analysis,max.p = 3,max.q = 3)
+
+
+```
+
+The auto.arima function also choses ARMA(1,1) model
+
+```{r sdwkedwe}
+
+fit.st = autoarfima(data_set_analysis, criterion = "AIC", method = "full",
+include.mean = F, distribution.model = "sstd")
+fit.st$rank.matrix
+
+```
+
+I am choosing an ARMA(1,1) as a conditional mean model. This model was chosen by BIC test and auto.arima
+We also computed the rank matrix using autoarfima which fits the arma model along with a skewed t distribution model. In the above rank matrix as well ARMA(1,1) is ranked very highly (third) by the AIC criteria. 
+
+Next, I will try to model it with GARCH processes
+
+
+```{r fit arma prob 3}
+
+gf = ic.fun(data_set_analysis, arma = c(1,1), var.model = c("sGARCH", "eGARCH","tGARCH","gjrGARCH"), dist = c("std","sstd", "ged", "sged") )
+
+
+```
+
+Both criteria select the same model tGARCH with different parameter values and with standard t distribution as overall best model. I chose the one chosen by BIC, i.e. TGARCH(1,1)
+
+We fit an ARMA(1,1) + TGARCH(1,1) model to our data.
+
+
+```{r avengers assemble}
+
+spec = ugarchspec(variance.model = list(model = "fGARCH",submodel="TGARCH", garchOrder = c(1,1)),
+mean.model = list(armaOrder = c(1,1), include.mean = F),
+distribution.model = "sstd")
+fit.e = ugarchfit(data_set, spec = spec, out.sample = n.fore)
+showShort(fit.e)
+
+
+```
+
+We observe that the Beta coefficient is very close to 1 indicating persistent dependancies in past volatilities.
+
+```{r let it go}
+
+plot(fit.e,which = 9)
+plot(fit.e, which = 8)
+plot(fit.e, which = 10)
+plot(fit.e, which = 11)
+
+
+
+```
+the QQ plot of the standardized residuals plotting against the standard t with estimated parameters and the histogram with the density curve of the Standard t. Both plots show clearly good fit to the distribution.
+
+Also, the ACF plots of residuals show almost negligible garch effects
+
+
+Next, I will compute and plot the 1-step rolling forecasts and PIs starting from Nov 1, 2016. 
+
+```{r winter is coming}
+
+fore.e = ugarchforecast(fit.e, n.roll = n.fore-1)
+spec = ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+mean.model = list(armaOrder = c(1,1), include.mean = F),
+distribution.model = "std")
+fit.s = ugarchfit(data_set, spec = spec, out.sample = n.fore)
+fore.s = ugarchforecast(fit.s, n.roll = n.fore-1)
+cat("The ARMA(1) + tGARCH(1,1) model:\n");rate(fore.e);
+cat("\nThe ARMA(1) + GARCH(1,1) model:\n");rate(fore.s)
+
+
+
+
+```
+
+```{r harryyyyy potttttter}
+
+
+spec = arfimaspec(mean.model = list(armaOrder = c(1, 1), include.mean = F),
+distribution.model = "std")
+fit.0 = arfimafit(data = data_set, spec = spec, out.sample = n.fore)
+fore.0 = arfimaforecast(fit.0, n.roll = n.fore-1)
+cat("The ARMA(1,1) + i.i.d White Noise:\n");rate0(fore.0)
+
+
+```
+  
+The coverage rates for ARMA(1,1) + i.i.d white noise model are much higher than the nominal rates 
+
+```{r avada kedavra}
+
+#par(mfrow=c(1,2))
+plot(fore.e,which = 2)
+plot(fore.s,which = 2)
+
+
+
+```
+From these plots we observe that on certain date, the constant width PIs are much wider than those of the tGARCH
+errors for many dates.
+
+Computing the 1-day and 2-day VaR for the investment $10000 of your stock on Oct 31
+
+```{r may the force be with you}
+
+cat("Mean forecasts:\n"); fitted(fore.e)[1:2,1:3];
+cat("\nSigma forecasts:\n"); sigma(fore.e)[1:2,1:3]
+
+
+coef = coef(fit.e)
+
+pred = cbind(ret = fitted(fore.e)[,"2016-10-31"],
+sig = sigma(fore.e)[,"2016-10-31"])
+head(pred,2)
+
+alpha = 0.05; S = 10000
+mu.1 = pred["T+1","ret"]; sig.1 = pred["T+1","sig"]
+q = qdist("std", p = 0.05, mu = mu.1, sigma = sig.1, shape = coef["shape"])
+cat("\nOne day VaR:\t", -S*q)
+
+m = 2; mu.m = sum(pred[1:m, "ret"])
+sig.m = sqrt(sum(pred[1:m, "sig"]^2))
+q = qdist("std", p = 0.05, mu = mu.m, sigma = sig.m, shape = coef["shape"])
+cat("\nTwo day VaR:\t", -S*q)
+
+
+
+
+```
+
